@@ -1,0 +1,197 @@
+C#
+
+//	excerpts from an application I wrote to scan vendor files in a given location for matching records the end user 
+//	specifies.
+
+private void ProcessBORDemo(MainWindow GUI, string[] _files, List<string> searchTerms, string outputPath)
+{
+	GUI.UpdateWindow("Search running on " + _files.Length + " files. Processing, please wait.");
+	int filesProcessed = 1;
+	FileProcess fp = new FileProcess();
+	List<List<BORMember>> ProcessedMemberCollection = new List<List<BORMember>>(); // collection of each file list
+	List<string> extractedFilesToProcess = new List<string>();
+
+	foreach (string file in _files)
+	{
+		GUI.UpdateProgress(filesProcessed, _files.Length);
+		List<BORMember> MemberInput = fp.ProcessBORMembers(file, searchTerms);
+		filesProcessed++;
+		if (MemberInput.Count == 0)
+		{
+			continue;
+		}
+		else
+		{
+			ProcessedMemberCollection.Add(MemberInput);
+		}
+	}
+	GUI.UpdateWindow("Files Processed.  Outputting to File.");
+	using (StreamWriter writer = new StreamWriter(outputPath))
+	{
+		foreach (List<BORMember> outputMember in ProcessedMemberCollection)
+		{
+			if(outputMember == null)
+			{
+				continue;
+			}
+			else
+			{
+				foreach (BORMember mem in outputMember)
+				{
+					int processStep = 0;    
+					if (processStep == 0)
+					{
+						writer.WriteLine("Results for " + mem.FileName + ":");
+						writer.WriteLine("*****************************************************************************************");
+						writer.WriteLine
+							(
+							"{0,-12}{1,-12}{2,-12}{3,-12}{4,-12}",
+							"AltID",
+							"PlanCode",
+							"CovOption",
+							"EffDate",
+							"TermDate"
+							);
+						processStep++;
+					}
+
+					string MaskedAltID = string.Concat("".PadLeft(6, '*'), mem.AltID.Substring(6, 3));
+					writer.WriteLine(String.Format("{0,-12}{1,-12}{2,-12}{3,-12}{4,-12}", MaskedAltID, mem.PlanCode, mem.BenefitLevel, mem.EffectiveDate, mem.StopDate));
+
+				}
+				writer.WriteLine("*****************************************************************************************");
+				writer.WriteLine("");
+			}
+		}
+	}
+	GUI.WorkComplete(outputPath);
+	ProcessedMemberCollection.Clear();
+}
+
+
+// process data from file and return a finalized collection for output
+
+public List<BORMember> ProcessBORMembers(string path, List<string> IDsToCheck)
+{
+	var query =
+		File.ReadAllLines(path)
+			.ToBORMember(path)
+			.Where(m => (IDsToCheck.Contains(m.AltID)));
+	return query.ToList();
+}
+
+
+//Extension method to map lines in the input file to a collection.
+
+public static IEnumerable<BORMember> ToBORMember(this IEnumerable<string> source, string path)
+{
+	foreach(var line in source)
+	{
+		yield return new BORMember
+		{
+			FileName = path,
+			RecordType = line.Substring(0, 1),
+			SSN = line.Substring(1, 9),
+			Employee = line.Substring(10, 6),
+			AltID = line.Substring(16, 9),
+			Agency = line.Substring(25, 6),
+			PlanCode = line.Substring(31, 4),
+			BenefitLevel = line.Substring(35, 2),
+			EmployeeAmount = line.Substring(37, 8),
+			EmployerAmount = line.Substring(45, 8),
+			TotalPremium = line.Substring(53, 8),
+			EffectiveDate = line.Substring(61, 8),
+			StopDate = line.Substring(69, 8),
+			SentDate = line.Substring(77, 8),
+			FileType = line.Substring(85, 1)
+		};
+	}
+}
+
+SQL
+
+--maintenance query:  
+
+Simple maintenance query that Identifies documents in the table that're stuck, and sets the flag
+for the automated process to pick them up the next time it runs
+
+UPDATE dbo.tblDocument
+
+SET
+	Flag = 1
+,	DateSignedOff = LastModified
+
+WHERE DateWrittenOut IS NULL
+AND FLAG IN (0,1)
+AND DATEDIFF(day, GETDATE(), [LastModified]) >= -90
+AND EmpId IN
+(
+	SELECT EmpId
+	FROM dbo.EmpData
+	WHERE EmpSignature IS NOT NULL
+	AND EmpSignatureDate IS NOT NULL
+)
+
+
+VB.net backend code to retrieve results based on what's selected in a list of radio buttons
+
+    Private Function SearchForRenewals() As List(Of RetailerRenewalDTO)
+        Dim fiscalYear = ddlFiscalYear.SelectedValue
+        Dim quarter = ddlQuarter.SelectedValue
+        Dim dao As New RetailerDao()
+
+        If rblLicenseType.SelectedValue = "Video" Then
+            Return dao.SearchForVideoRenewals(fiscalYear, quarter)
+        ElseIf rblLicenseType.SelectedValue = "Instant" Then
+            Return dao.SearchForInstantRenewals(fiscalYear) ' Instant and Online are lumped together
+        ElseIf rblLicenseType.SelectedValue = "Operator" Then
+            Return dao.SearchForOperatorRenewals(fiscalYear)
+        End If
+
+    End Function
+
+
+Method called from codebehind:
+
+
+public List<RetailerRenewalDTO> SearchForOperatorRenewals(int fiscalYear)
+{
+	List<RetailerRenewalDTO> results = new List<RetailerRenewalDTO>();
+	using (var context = new LT06LicensesRenewalEntities())
+	{
+		DateTime fyStart = new DateTime(fiscalYear - 1, 7, 1); //FY2023 -> 07/01/2022
+		DateTime fyEnd = new DateTime(fiscalYear, 6, 30);      //       -> 06/30/2023
+		results =                   
+		(
+		   from v in context.LT06VideoVendorOBDTA                   
+		   where v.DateCancelled.Value == null                                       
+
+		select new RetailerRenewalDTO()
+			{
+				ID = v.ID
+			,   ControlNumber = v.ControlNumber
+			,   LicenseNumber = v.LicenseNumber
+			,   BusinessName = v.OperatorName
+			,   DateApproved = v.DateApproved
+			,   DateRenewed = null
+			,   PrimaryEmail = v.EmailAddress
+			
+			}
+		).OrderBy(x => x.LicenseNumber).ToList();
+
+		foreach (RetailerRenewalDTO item in results)
+		{
+			int tmpLicNum = 0;
+			if (int.TryParse(item.LicenseNumber, out tmpLicNum))
+			{
+				item.LicenseNumberInt = tmpLicNum;
+			}
+			else
+			{
+				item.LicenseNumberInt = 0;
+			}
+		}
+	}
+	return results.Where(x => x.LicenseNumberInt > 299).OrderBy(x => x.LicenseNumberInt).ToList();
+}
+
